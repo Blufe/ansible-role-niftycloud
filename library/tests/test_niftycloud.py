@@ -83,8 +83,10 @@ class TestNiftycloud(unittest.TestCase):
 				instance_state = 80
 			))
 
-		self.mockStopInstance  = mock.MagicMock(return_value=(True, 80, 'stopped'))
-		self.mockStartInstance = mock.MagicMock(return_value=(True, 16, 'running'))
+		self.mockCreateInstance  = mock.MagicMock(return_value=(True, 16))
+		self.mockRestartInstance = mock.MagicMock(return_value=(True, 16, 'restarted'))
+		self.mockStopInstance    = mock.MagicMock(return_value=(True, 80, 'stopped'))
+		self.mockStartInstance   = mock.MagicMock(return_value=(True, 16, 'running'))
 
 		self.mockRequestsError = mock.MagicMock(return_value=None)
 
@@ -240,7 +242,7 @@ class TestNiftycloud(unittest.TestCase):
 		with mock.patch('requests.post', self.mockRequestsPostRunInstance):
 			with mock.patch('niftycloud.get_instance', self.mockGetInstance16):
 				self.assertEqual(
-					(True, 16, 'created'),
+					(True, 16),
 					niftycloud.create_instance(self.mockModule)
 				)
 
@@ -258,7 +260,7 @@ class TestNiftycloud(unittest.TestCase):
                 with mock.patch('requests.post', self.mockRequestsPostRunInstance):
                         with mock.patch('niftycloud.get_instance', self.mockGetInstance16):
                                 self.assertEqual(
-                                        (True, 16, 'created'),
+                                        (True, 16),
                                         niftycloud.create_instance(mock_module)
                                 )
 
@@ -276,7 +278,7 @@ class TestNiftycloud(unittest.TestCase):
                 with mock.patch('requests.post', self.mockRequestsPostRunInstance):
                         with mock.patch('niftycloud.get_instance', self.mockGetInstance16):
                                 self.assertEqual(
-                                        (True, 16, 'created'),
+                                        (True, 16),
                                         niftycloud.create_instance(mock_module)
                                 )
 
@@ -306,14 +308,13 @@ class TestNiftycloud(unittest.TestCase):
 			niftycloud.start_instance(self.mockModule, 16)
 		)
 
-	# absent(-1) -> created(16)
+	# absent(-1)
 	def test_start_instance_absent(self):
-		with mock.patch('requests.post', self.mockRequestsPostRunInstance):
-			with mock.patch('niftycloud.get_instance', self.mockGetInstance16):
-				self.assertEqual(
-					(True, 16, 'created'),
-					niftycloud.start_instance(self.mockModule, -1)
-				)
+		self.assertRaises(
+			Exception,
+			niftycloud.start_instance,
+			(self.mockModule, -1)
+		)
 
 	# stopped(80) -> running(16)
 	def test_start_instance_stopped_success(self):
@@ -393,6 +394,88 @@ class TestNiftycloud(unittest.TestCase):
 				self.assertEqual(
 					(True, 16, 'restarted'),
 					niftycloud.restart_instance(self.mockModule, 16)
+				)
+
+	# stopped(80) - start -> running(16)
+	def test_update_instance_running_from_stoped(self):
+		with mock.patch('niftycloud.get_instance', self.mockGetInstance80):
+			with mock.patch('niftycloud.start_instance', self.mockStartInstance):
+				self.assertEqual(
+					(False, False, True, 16, 'running'),
+					niftycloud.update_instance(self.mockModule, 'running')
+				)
+
+	# running(16) - stop -> stopped(80)
+	def test_update_instance_stopped_and_running(self):
+		with mock.patch('niftycloud.get_instance', self.mockGetInstance16):
+			with mock.patch('niftycloud.stop_instance', self.mockStopInstance):
+				self.assertEqual(
+					(False, False, True, 80, 'stopped'),
+					niftycloud.update_instance(self.mockModule, 'stopped')
+				)
+
+	# running(16) - restart -> running(16)
+	def test_update_instance_restarted(self):
+		with mock.patch('niftycloud.get_instance', self.mockGetInstance16):
+			with mock.patch('niftycloud.restart_instance', self.mockRestartInstance):
+				self.assertEqual(
+					(False, False, True, 16, 'restarted'),
+					niftycloud.update_instance(self.mockModule, 'restarted')
+				)
+
+	# absent(-1) - create -> running(16)
+	def test_update_instance_absent_and_running(self):
+		with mock.patch('niftycloud.get_instance', self.mockGetInstanceError):
+			with mock.patch('niftycloud.create_instance', self.mockCreateInstance):
+				self.assertEqual(
+					(True, False, False, 16, 'running'),
+					niftycloud.update_instance(self.mockModule, 'running')
+				)
+
+	# absent(-1) - create -> running(16) - stop -> stopped(80)
+	def test_update_instance_absent_and_stopped(self):
+		with mock.patch('niftycloud.get_instance', self.mockGetInstanceError):
+			with mock.patch('niftycloud.create_instance', self.mockCreateInstance):
+				with mock.patch('niftycloud.stop_instance', self.mockStopInstance):
+					self.assertEqual(
+						(True, False, True, 80, 'stopped'),
+						niftycloud.update_instance(self.mockModule, 'stopped')
+					)
+
+	# absent(-1) - create -> running(16) - restart -> running(16)
+	def test_update_instance_absent_and_restarted(self):
+		with mock.patch('niftycloud.get_instance', self.mockGetInstanceError):
+			with mock.patch('niftycloud.create_instance', self.mockCreateInstance):
+				with mock.patch('niftycloud.restart_instance', self.mockRestartInstance):
+					self.assertEqual(
+						(True, False, True, 16, 'restarted'),
+						niftycloud.update_instance(self.mockModule, 'restarted')
+					)
+
+	# running(16) -> running(16)  * do nothing
+	def test_update_instance_running_from_running(self):
+		with mock.patch('niftycloud.get_instance', self.mockGetInstance16):
+			self.assertEqual(
+				(False, False, False, 16, 'running'),
+				niftycloud.update_instance(self.mockModule, 'running')
+			)
+
+	# stopped(80) -> stopped(80)  * do nothing
+	def test_update_instance_stopped_and_stopped(self):
+		with mock.patch('niftycloud.get_instance', self.mockGetInstance80):
+			self.assertEqual(
+				(False, False, False, 80, 'stopped'),
+				niftycloud.update_instance(self.mockModule, 'stopped')
+			)
+
+	# incorrect instance state error
+	def test_update_instance_incorrect_state(self):
+		for current_state in [0, 96, 112, 128, 201, 202, 203]:
+			with mock.patch('niftycloud.get_instance_state', mock.MagicMock(return_value=current_state)):
+				self.assertRaises(
+					Exception,
+					niftycloud.update_instance,
+					(self.mockModule, 'running')
 				)
 
 niftycloud_api_response_sample = dict(

@@ -233,7 +233,7 @@ def create_instance(module):
  			if current_state < 0: retry_count -= 1
 
 		if current_state in goal_state:
-			return (True, current_state, 'created')
+			return (True, current_state)
 		else:
 			module.fail_json(status=-1, instance_id=module.params['instance_id'], msg='changes failed (create_instance)')
 	else:
@@ -251,43 +251,43 @@ def start_instance(module, current_state):
 
 	if current_state == goal_state:
 		return (False, current_state, 'running')
-	elif current_state == -1:
-		return create_instance(module)
-	elif current_state == 80:
-		params = dict()
-		params['InstanceId.1']     = module.params['instance_id']
+	elif current_state != 80:
+		module.fail_json(status=-1, instance_id=module.params['instance_id'], msg='instance not stopped')
 
-		if module.params['instance_type'] is not None:
-			params['InstanceType.1']   = module.params['instance_type']
+	params = dict()
+	params['InstanceId.1'] = module.params['instance_id']
 
-		if module.params['accounting_type'] is not None:
-			params['AccountingType.1'] = module.params['accounting_type']
+	if module.params['instance_type'] is not None:
+		params['InstanceType.1']   = module.params['instance_type']
 
-		configure_user_data(module, params)
+	if module.params['accounting_type'] is not None:
+		params['AccountingType.1'] = module.params['accounting_type']
 
-		res = request_to_api(module, 'POST', 'StartInstances', params)
+	configure_user_data(module, params)
 
-		if res['status'] == 200:
-			current_state = int(res['xml_body'].find('.//{{{nc}}}currentState/{{{nc}}}code'.format(**res['xml_namespace'])).text)
-			retry_count = 10
-			while retry_count > 0 and current_state != goal_state:
-				time.sleep(60)
-				current_state = get_instance_state(module)
- 				if current_state < 0: retry_count -= 1
+	res = request_to_api(module, 'POST', 'StartInstances', params)
 
-			if current_state == goal_state:
-				return (True, current_state, 'running')
-			else:
-				module.fail_json(status=current_state, instance_id=module.params['instance_id'], msg='changes failed (start_instance)')
+	if res['status'] == 200:
+		current_state = int(res['xml_body'].find('.//{{{nc}}}currentState/{{{nc}}}code'.format(**res['xml_namespace'])).text)
+		retry_count = 10
+		while retry_count > 0 and current_state != goal_state:
+			time.sleep(60)
+			current_state = get_instance_state(module)
+			if current_state < 0: retry_count -= 1
+
+		if current_state == goal_state:
+			return (True, current_state, 'running')
 		else:
-			error_info = get_api_error(res['xml_body'])
-			module.fail_json(
-				status=-1,
-				instance_id=module.params['instance_id'],
-				msg='changes failed (start_instance)',
-				error_code=error_info.get('code'),
-				error_message=error_info.get('message')
-			)
+			module.fail_json(status=current_state, instance_id=module.params['instance_id'], msg='changes failed (start_instance)')
+	else:
+		error_info = get_api_error(res['xml_body'])
+		module.fail_json(
+			status=-1,
+			instance_id=module.params['instance_id'],
+			msg='changes failed (start_instance)',
+			error_code=error_info.get('code'),
+			error_message=error_info.get('message')
+		)
 
 def stop_instance(module, current_state):
 	goal_state = 80
@@ -335,6 +335,34 @@ def restart_instance(module, current_state):
 
 	return (changed, current_state, 'restarted')
 
+def update_instance(module, goal_state):
+	(created, modified, manipulated) = (False, False, False)
+	instance_id = module.params['instance_id']
+
+	# check current status
+	current_state = get_instance_state(module)
+	if current_state in [0, 96, 112, 128, 201, 202, 203]:
+		module.fail_json(status=current_state, instance_id=instance_id, msg='current state can not continue the process (current statue = "{0}"'.format(current_state))
+
+	# create or modify instance
+	if current_state == -1:
+		(created, current_state) = create_instance(module)
+	else:
+		# TODO: ModifyInstanceAttribue
+		(modified, current_state) = (False, current_state)
+
+	# manipulate instance
+	if goal_state == 'running':
+		(manipulated, current_state, msg) = start_instance(module, current_state)
+	elif goal_state == 'stopped':
+		(manipulated, current_state, msg) = stop_instance(module, current_state)
+	elif goal_state == 'restarted':
+		(manipulated, current_state, msg) = restart_instance(module, current_state)
+	else:
+		module.fail_json(status=-1, instance_id=instance_id, msg='invalid state (goal state = "{0}")'.format(goal_state))
+
+	return (created, modified, manipulated, current_state, msg)
+
 def main():
 	module = AnsibleModule(
 		argument_spec = dict(
@@ -360,21 +388,17 @@ def main():
 	goal_state  = module.params['state']
 	instance_id = module.params['instance_id']
 
-	# check current status
-	current_state = get_instance_state(module)
-	if current_state in [0, 96, 112, 128, 201, 202, 203]:
-		module.fail_json(status=current_state, instance_id=instance_id, msg='current state can not continue the process (current statue = "{0}"'.format(current_state))
+	(created, modified, manipulated, current_state, msg) = update_instance(module, goal_state)
 
-	if goal_state == 'running':
-		(changed, current_state, msg) = start_instance(module, current_state)
-	elif goal_state == 'stopped':
-		(changed, current_state, msg) = stop_instance(module, current_state)
-	elif goal_state == 'restarted':
-		(changed, current_state, msg) = restart_instance(module, current_state)
-	else:
-		module.fail_json(status=-1, instance_id=instance_id, msg='invalid state (goal state = "{0}")'.format(goal_state))
-
-	module.exit_json(changed=changed, instance_id=instance_id, status=current_state, msg=msg)
+	module.exit_json(
+		changed=(created | modified | manipulated),
+		created=created,
+		modified=modified,
+		manipulated=manipulated,
+		instance_id=instance_id,
+		status=current_state,
+		msg=msg
+	)
 
 from ansible.module_utils.basic import *
 import urllib, hmac, hashlib, base64, time, requests
