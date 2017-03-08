@@ -144,15 +144,22 @@ def get_api_error(xml_body):
 	)
 	return info
 
-def get_instance_state(module):
+def get_instance(module):
 	params = dict()
 	params['InstanceId.1'] = module.params['instance_id']
 	res = request_to_api(module, 'GET', 'DescribeInstances', params)
 
 	if res['status'] == 200:
-		return int(res['xml_body'].find('.//{{{nc}}}instanceState/{{{nc}}}code'.format(**res['xml_namespace'])).text)
+		info = dict(
+			instance_id    = res['xml_body'].find('.//{{{nc}}}instanceId'.format(**res['xml_namespace'])).text,
+			instance_state = int(res['xml_body'].find('.//{{{nc}}}instanceState/{{{nc}}}code'.format(**res['xml_namespace'])).text)
+		)
+		return info
 	else:
-		return -1
+		return dict(instance_state = -1)
+
+def get_instance_state(module):
+	return get_instance(module).get('instance_state')
 
 def configure_user_data(module, params):
 	startup_script_path = module.params['startup_script']
