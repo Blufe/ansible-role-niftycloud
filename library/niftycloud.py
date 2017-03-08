@@ -154,6 +154,11 @@ def get_instance(module):
 			instance_id    = res['xml_body'].find('.//{{{nc}}}instanceId'.format(**res['xml_namespace'])).text,
 			instance_state = int(res['xml_body'].find('.//{{{nc}}}instanceState/{{{nc}}}code'.format(**res['xml_namespace'])).text)
 		)
+
+		group_id = res['xml_body'].find('.//{{{nc}}}groupId'.format(**res['xml_namespace']))
+		if group_id is not None:
+			info['group_id'] = group_id.text
+
 		return info
 	else:
 		return dict(instance_state = -1)
@@ -245,6 +250,54 @@ def create_instance(module):
 			error_code=error_info.get('code'),
 			error_message=error_info.get('message')
 		)
+
+def modify_instance(module, instance_info):
+	modified   = False
+	goal_state = [16, 96]
+
+	current_state = instance_info.get('instance_state')
+
+	# update applied fw group
+	goal_group_id    = module.params['security_group']
+	current_group_id = instance_info.get('group_id')
+	if current_group_id != goal_group_id:
+		params = dict(
+			InstanceId = module.params['instance_id'],
+			Attribute  = 'groupId',
+			Value      = goal_group_id
+		)
+
+		res = request_to_api(module, 'POST', 'ModifyInstanceAttribute', params)
+
+		if res['status'] == 200:
+			for retry_count in range(10):
+				instance_info    = get_instance(module)
+				current_group_id = instance_info.get('group_id')
+				current_state    = instance_info.get('instance_state')
+				if current_group_id == goal_group_id and current_state in goal_state: break
+				time.sleep(60)
+
+			if current_group_id == goal_group_id:
+				modified = True
+			else:
+				module.fail_json(
+					status=-1,
+					instance_id=module.params['instance_id'],
+					group_id=goal_group_id,
+					msg='changes failed (modify_instance)'
+				)
+		else:
+			error_info = get_api_error(res['xml_body'])
+			module.fail_json(
+				status=-1,
+				instance_id=module.params['instance_id'],
+				group_id=goal_group_id,
+				msg='changes failed (modify_instance)',
+				error_code=error_info.get('code'),
+				error_message=error_info.get('message')
+			)
+
+	return (modified, current_state)
 
 def start_instance(module, current_state):
 	goal_state = 16
@@ -340,7 +393,8 @@ def update_instance(module, goal_state):
 	instance_id = module.params['instance_id']
 
 	# check current status
-	current_state = get_instance_state(module)
+	instance_info = get_instance(module)
+	current_state = instance_info.get('instance_state')
 	if current_state in [0, 96, 112, 128, 201, 202, 203]:
 		module.fail_json(status=current_state, instance_id=instance_id, msg='current state can not continue the process (current statue = "{0}"'.format(current_state))
 
@@ -348,8 +402,7 @@ def update_instance(module, goal_state):
 	if current_state == -1:
 		(created, current_state) = create_instance(module)
 	else:
-		# TODO: ModifyInstanceAttribue
-		(modified, current_state) = (False, current_state)
+		(modified, current_state) = modify_instance(module, instance_info)
 
 	# manipulate instance
 	if goal_state == 'running':

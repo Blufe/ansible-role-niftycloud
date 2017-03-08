@@ -60,6 +60,12 @@ class TestNiftycloud(unittest.TestCase):
 				text = self.xml['startInstance']
 			))
 
+		self.mockRequestsPostModifyInstanceAttribute = mock.MagicMock(
+			return_value=mock.MagicMock(
+				status_code = 200,
+				text = self.xml['modifyInstanceAttribute']
+			))
+
 		self.mockRequestsInternalServerError = mock.MagicMock(
 			return_value=mock.MagicMock(
 				status_code = 500,
@@ -73,20 +79,24 @@ class TestNiftycloud(unittest.TestCase):
 
 		self.mockGetInstance16 = mock.MagicMock(
 			return_value=dict(
+				group_id = 'appprifw001',
 				instance_id = 'test001',
 				instance_state = 16
 			))
 
 		self.mockGetInstance80 = mock.MagicMock(
 			return_value=dict(
+				group_id = 'appprifw001',
 				instance_id = 'test001',
 				instance_state = 80
 			))
 
-		self.mockCreateInstance  = mock.MagicMock(return_value=(True, 16))
-		self.mockRestartInstance = mock.MagicMock(return_value=(True, 16, 'restarted'))
-		self.mockStopInstance    = mock.MagicMock(return_value=(True, 80, 'stopped'))
-		self.mockStartInstance   = mock.MagicMock(return_value=(True, 16, 'running'))
+		self.mockCreateInstance   = mock.MagicMock(return_value=(True, 16))
+		self.mockModifyInstance16 = mock.MagicMock(return_value=(True, 16))
+		self.mockModifyInstance80 = mock.MagicMock(return_value=(True, 80))
+		self.mockRestartInstance  = mock.MagicMock(return_value=(True, 16, 'restarted'))
+		self.mockStopInstance     = mock.MagicMock(return_value=(True, 80, 'stopped'))
+		self.mockStartInstance    = mock.MagicMock(return_value=(True, 16, 'running'))
 
 		self.mockRequestsError = mock.MagicMock(return_value=None)
 
@@ -218,6 +228,7 @@ class TestNiftycloud(unittest.TestCase):
 	def test_get_instance_present(self):
 		with mock.patch('requests.get', self.mockRequestsGetDescribeInstance):
 			instance_info = niftycloud.get_instance(self.mockModule)
+			self.assertEqual('fw001',    instance_info.get('group_id'))
 			self.assertEqual('server01', instance_info.get('instance_id'))
 			self.assertEqual(16,         instance_info.get('instance_state'))
 
@@ -299,6 +310,40 @@ class TestNiftycloud(unittest.TestCase):
 				Exception,
 				niftycloud.create_instance,
 				(self.mockModule)
+			)
+
+	# modify success
+	def test_modify_instance_success(self):
+		with mock.patch('requests.post', self.mockRequestsPostModifyInstanceAttribute):
+			with mock.patch('niftycloud.get_instance', self.mockGetInstance16):
+				self.assertEqual(
+					(True, 16),
+					niftycloud.modify_instance(self.mockModule, dict(
+						group_id = 'sv001',
+						instance_id = 'test001',
+						instance_state = 16
+					))
+				)
+
+	# modify skip
+	def test_modify_instance_skip(self):
+		with mock.patch('niftycloud.get_instance', self.mockGetInstance16):
+			self.assertEqual(
+				(False, 16),
+				niftycloud.modify_instance(self.mockModule, dict(
+					group_id = 'appprifw001',
+					instance_id = 'test001',
+					instance_state = 16
+				))
+			)
+
+	# internal server error
+	def test_modify_instance_error(self):
+		with mock.patch('requests.post', self.mockRequestsInternalServerError):
+			self.assertRaises(
+				Exception,
+				niftycloud.modify_instance,
+				(self.mockModule, 16)
 			)
 
 	# running(16) -> running(16)  * do nothing
@@ -452,6 +497,44 @@ class TestNiftycloud(unittest.TestCase):
 						niftycloud.update_instance(self.mockModule, 'restarted')
 					)
 
+	# running(16) - modify -> running(16)
+	def test_update_instance_modify_and_running(self):
+		with mock.patch('niftycloud.get_instance', self.mockGetInstance16):
+			with mock.patch('niftycloud.modify_instance', self.mockModifyInstance16):
+				self.assertEqual(
+					(False, True, False, 16, 'running'),
+					niftycloud.update_instance(self.mockModule, 'running')
+				)
+
+	# stopped(80) - modify -> stopped(80)
+	def test_update_instance_modify_and_running(self):
+		with mock.patch('niftycloud.get_instance', self.mockGetInstance80):
+			with mock.patch('niftycloud.modify_instance', self.mockModifyInstance80):
+				self.assertEqual(
+					(False, True, False, 80, 'stopped'),
+					niftycloud.update_instance(self.mockModule, 'stopped')
+				)
+
+	# running(16) - modify -> stopped(80) - start -> running(16)
+	def test_update_instance_modify_and_running(self):
+		with mock.patch('niftycloud.get_instance', self.mockGetInstance16):
+			with mock.patch('niftycloud.modify_instance', self.mockModifyInstance80):
+				with mock.patch('niftycloud.start_instance', self.mockStartInstance):
+					self.assertEqual(
+						(False, True, True, 16, 'running'),
+						niftycloud.update_instance(self.mockModule, 'running')
+					)
+
+	# stopped(80) - modify -> running(16) - stop -> stopped(80)
+	def test_update_instance_modify_and_running(self):
+		with mock.patch('niftycloud.get_instance', self.mockGetInstance80):
+			with mock.patch('niftycloud.modify_instance', self.mockModifyInstance16):
+				with mock.patch('niftycloud.stop_instance', self.mockStopInstance):
+					self.assertEqual(
+						(False, True, True, 80, 'stopped'),
+						niftycloud.update_instance(self.mockModule, 'stopped')
+					)
+
 	# running(16) -> running(16)  * do nothing
 	def test_update_instance_running_from_running(self):
 		with mock.patch('niftycloud.get_instance', self.mockGetInstance16):
@@ -486,7 +569,11 @@ niftycloud_api_response_sample = dict(
     <item>
       <reservationId />
       <ownerId />
-      <groupSet />
+      <groupSet>
+        <item>
+          <groupId>fw001</groupId>
+        </item>
+      </groupSet>
       <instancesSet>
         <item>
           <instanceId>server01</instanceId>
@@ -753,6 +840,12 @@ niftycloud_api_response_sample = dict(
     </item>
   </instancesSet>
 </StopInstancesResponse>
+''',
+	modifyInstanceAttribute = '''
+<ModifyInstanceAttributeResponse xmlns="https://cp.cloud.nifty.com/api/">
+ <requestId>320fc738-a1c7-4a2f-abcb-20813a4e997c</requestId>
+ <return>true</return>
+</ModifyInstanceAttributeResponse>
 ''',
 	internalServerError = '''
 <Response>
